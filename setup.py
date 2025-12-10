@@ -135,6 +135,7 @@ def build_all():
         "miasm/arch/x86",
         "miasm/arch/arm",
         "miasm/arch/aarch64",
+        "miasm/arch/riscv",
         "miasm/arch/msp430",
         "miasm/arch/mep",
         "miasm/arch/sh4",
