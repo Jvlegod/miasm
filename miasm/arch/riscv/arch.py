@@ -207,6 +207,10 @@ class instruction_riscv(instruction):
 
         else:
             raise NotImplementedError("bad op")
+        
+    def is_subcall(self):
+        return self.name in ["JAL", "JALR"]
+
 
 class mn_riscv(cls_mn):
     name = "riscv"

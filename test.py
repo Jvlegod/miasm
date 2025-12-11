@@ -21,7 +21,28 @@ from miasm.arch.aarch64.arch import mn_aarch64
 loc_db = LocationDB()
 l = mn_aarch64.fromstring('EOR X0, X0, X0', loc_db, 'l')
 print(l)
-print(mn_aarch64.asm(l))
+a = mn_aarch64.asm(l)
+print(a)
+b = mn_aarch64.dis(a[0], "l")
+print(b)
+from miasm.analysis.machine import Machine
+mn = Machine('aarch64l').mn
+instr = mn.dis(b'\x00\x00\x00\xca', 'l')
+print(instr)
+machine = Machine('aarch64l')
+lifter = machine.lifter_model_call(loc_db)
+ircfg = lifter.new_ircfg()
+lifter.add_instr_to_ircfg(instr, ircfg)
+for lbl, irblock in ircfg.blocks.items():
+    print(irblock)
+print("working with IR ---")
+for lbl, irblock in ircfg.blocks.items():
+    for assignblk in irblock:
+        rw = assignblk.get_rw()
+        for dst, reads in rw.items():
+            print('read:   ', [str(x) for x in reads])
+            print('written:', dst)
+            print()
 
 # riscv
 
@@ -29,12 +50,30 @@ print("riscv:")
 from miasm.arch.riscv.arch import mn_riscv
 
 loc_db = LocationDB()
-l = mn_riscv.fromstring("ADD X1, X1, X1", loc_db, 64)
+l = mn_riscv.fromstring("ADD X1, X3, X2", loc_db, 64)
 print(l)
 a = mn_riscv.asm(l)
 print(a)
 b = mn_riscv.dis(a[0], 64)
 print(b)
+from miasm.analysis.machine import Machine
+mn = Machine('riscv').mn
+instr = mn.dis(b'\x00\x21\x80\xb3', 64)
+print(instr)
+machine = Machine('riscv')
+lifter = machine.lifter_model_call(loc_db)
+ircfg = lifter.new_ircfg()
+lifter.add_instr_to_ircfg(instr, ircfg)
+for lbl, irblock in ircfg.blocks.items():
+    print(irblock)
+print("working with IR ---")
+for lbl, irblock in ircfg.blocks.items():
+    for assignblk in irblock:
+        rw = assignblk.get_rw()
+        for dst, reads in rw.items():
+            print('read:   ', [str(x) for x in reads])
+            print('written:', dst)
+            print()
 
 # arm
 """
