@@ -105,6 +105,20 @@ jitter.set_trace_log()
 jitter.init_run(run_addr)
 jitter.continue_run()
 
+print("Symbolic execution:")
+lifter = machine.lifter_model_call(loc_db)
+ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
+from miasm.ir.symbexec import SymbolicExecutionEngine
+sb = SymbolicExecutionEngine(lifter)
+symbolic_pc = sb.run_at(ircfg, 0)
+print(symbolic_pc)
+sb = SymbolicExecutionEngine(lifter, machine.mn.regs.regs_init)
+symbolic_pc = sb.run_at(ircfg, 0, step=True)
+from miasm.expression.expression import ExprInt
+sb.symbols[machine.mn.regs.X1] = ExprInt(-3, 64)
+symbolic_pc = sb.run_at(ircfg, 0, step=True)
+
+
 # riscv
 
 print("=== riscv ===")
@@ -181,6 +195,19 @@ jitter.push_uint64_t(0x1337beef)
 jitter.set_trace_log()
 jitter.init_run(run_addr)
 jitter.continue_run()
+
+print("Symbolic execution:")
+lifter = machine.lifter_model_call(loc_db)
+ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
+from miasm.ir.symbexec import SymbolicExecutionEngine
+sb = SymbolicExecutionEngine(lifter)
+symbolic_pc = sb.run_at(ircfg, 0)
+print(symbolic_pc)
+sb = SymbolicExecutionEngine(lifter, machine.mn.regs.regs_init)
+symbolic_pc = sb.run_at(ircfg, 0, step=True)
+from miasm.expression.expression import ExprInt
+sb.symbols[machine.mn.regs.X1] = ExprInt(-3, 64)
+symbolic_pc = sb.run_at(ircfg, 0, step=True)
 
 # arm
 """

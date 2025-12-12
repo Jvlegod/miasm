@@ -33,4 +33,8 @@ all_regs_ids_no_alias = all_regs_ids
 
 all_regs_ids_byname = dict([(x.name, x) for x in all_regs_ids])
 
-all_regs_ids_byname.update(dict((x.name, x) for x in all_regs_ids))
+all_regs_ids_init = [ExprId("%s_init" % x.name, x.size) for x in all_regs_ids]
+
+regs_init = {}
+for i, r in enumerate(all_regs_ids):
+    regs_init[r] = all_regs_ids_init[i]
