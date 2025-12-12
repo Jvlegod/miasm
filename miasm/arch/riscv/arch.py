@@ -95,74 +95,45 @@ class riscv_arg(m_arg):
             return m2_expr.ExprOp(value.op, *args)
 
         return None
-    
-class riscv_b_offs(imm_noarg, riscv_arg):
-    parser = base_expr
 
-    def decode(self, v):
-        imm12  = self.parent.imm12_b.value     # inst[31]
-        imm10_5 = self.parent.imm10_5.value    # inst[30:25]
-        imm4_1  = self.parent.imm4_1.value     # inst[11:8]
-        imm11   = v & 1                        # inst[7]
-
-        offw_u = (imm12 << 11) | (imm10_5 << 5) | (imm4_1 << 1) | imm11
-
-        if offw_u & (1 << 11):
-            offw = offw_u - (1 << 12) # Neg
-        else:
-            offw = offw_u # Pos
-
-        off_bytes = offw << 1
-
-        self.expr = m2_expr.ExprInt(off_bytes, XLEN64)
-        return True
-
-    def encode(self):
-        if not isinstance(self.expr, m2_expr.ExprInt):
-            return False
-
-        off_bytes = int(self.expr)
-
-        if off_bytes & 1:
-            return False
-
-        offw = off_bytes >> 1  # word offset
-
-        if offw < -(1 << 11) or offw >= (1 << 11):
-            return False
-
-        offw_u = offw & 0xFFF
-
-        imm12   = (offw_u >> 11) & 0x1
-        imm10_5 = (offw_u >> 5)  & 0x3F
-        imm4_1  = (offw_u >> 1)  & 0xF
-        imm11   = offw_u         & 0x1
-
-        self.parent.imm12_b.value = imm12
-        self.parent.imm10_5.value = imm10_5
-        self.parent.imm4_1.value  = imm4_1
-
-        self.value = imm11
-        return True
-
-class riscv_imm(imm_noarg, riscv_arg):
-    parser = base_expr
-
-    intsize = XLEN64
-    intmask = (1 << intsize) - 1
-    int2expr = lambda self, v: m2_expr.ExprInt(v, XLEN64)
-
-class riscv_imm11_0(imm_noarg, riscv_arg):
+class riscv_imm_I(imm_noarg, riscv_arg):
     parser = base_expr
     intsize = XLEN64
 
     def decode(self, v):
         v &= self.lmask
-
         if v & (1 << (self.l - 1)):
             v -= 1 << self.l
-
         self.expr = m2_expr.ExprInt(v, self.intsize)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+        v = int(self.expr)
+        if v < -(1 << (self.l - 1)) or v >= (1 << (self.l - 1)):
+            return False
+        self.value = v & self.lmask
+        return True
+
+class riscv_imm_S(imm_noarg, riscv_arg):
+    """
+    S-type store imm[11:0] = {imm[11:5], imm[4:0]}, sign-extended
+    """
+    parser = base_expr
+    intsize = XLEN64
+
+    def decode(self, v):
+        # v = imm[4:0]
+        lo = v & self.lmask
+        hi = self.parent.imm_S_hi.value
+
+        imm12 = (hi << 5) | lo
+
+        if imm12 & (1 << 11):
+            imm12 -= 1 << 12
+
+        self.expr = m2_expr.ExprInt(imm12, self.intsize)
         return True
 
     def encode(self):
@@ -170,11 +141,138 @@ class riscv_imm11_0(imm_noarg, riscv_arg):
             return False
 
         v = int(self.expr)
-
-        if v < -(1 << (self.l - 1)) or v >= (1 << (self.l - 1)):
+        if v < -(1 << 11) or v >= (1 << 11):
             return False
 
-        self.value = v & self.lmask
+        imm12 = v & 0xFFF
+        lo = imm12 & 0x1F
+        hi = (imm12 >> 5) & 0x7F
+
+        self.parent.imm_S_hi.value = hi
+        self.value = lo
+        return True
+
+class riscv_imm_B(imm_noarg, riscv_arg):
+    """
+    B-type branch offset
+    """
+    parser = base_expr
+    intsize = XLEN64
+
+    def decode(self, v):
+        # imm[11]
+        bit11    = v & 0x1
+        bit12    = self.parent.b_imm_12.value
+        bits10_5 = self.parent.b_imm_10_5.value
+        bits4_1  = self.parent.b_imm_4_1.value
+
+        imm = (bit12 << 12) | (bit11 << 11) | (bits10_5 << 5) | (bits4_1 << 1)
+
+        # 13-bit sign-extend
+        if imm & (1 << 12):
+            imm -= 1 << 13
+
+        self.expr = m2_expr.ExprInt(imm, self.intsize)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+
+        imm = int(self.expr)
+
+        # RISC-V B-type offset must 2 Bytes aligned
+        if imm & 1:
+            return False
+
+        if imm < -(1 << 12) or imm >= (1 << 12):
+            return False
+
+        imm &= (1 << 13) - 1  # 13 bits
+
+        bit12    = (imm >> 12) & 0x1
+        bit11    = (imm >> 11) & 0x1
+        bits10_5 = (imm >> 5)  & 0x3F
+        bits4_1  = (imm >> 1)  & 0xF
+
+        self.parent.b_imm_12.value   = bit12
+        self.parent.b_imm_10_5.value = bits10_5
+        self.parent.b_imm_4_1.value  = bits4_1
+        self.value = bit11 # imm[11]
+        return True
+
+
+class riscv_imm_U(imm_noarg, riscv_arg):
+    """
+    U-type imm[31:12]
+    """
+    parser = base_expr
+    intsize = XLEN64
+
+    def decode(self, v):
+        v &= self.lmask
+        if v & (1 << 19):
+            v -= 1 << 20
+        self.expr = m2_expr.ExprInt(v, self.intsize)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+
+        val = int(self.expr)
+        if val < -(1 << 19) or val >= (1 << 19):
+            return False
+
+        self.value = val & self.lmask
+        return True
+
+
+class riscv_imm_J(imm_noarg, riscv_arg):
+    """
+    J-type JAL offset: imm[20|10:1|11|19:12] << 1, sign-extended
+    """
+    parser = base_expr
+    intsize = XLEN64
+
+    def decode(self, v):
+        bits19_12 = v & self.lmask
+
+        bit20     = self.parent.j_imm_20.value
+        bits10_1  = self.parent.j_imm_10_1.value
+        bit11     = self.parent.j_imm_11.value
+
+        imm = (bit20 << 20) | (bits19_12 << 12) | (bit11 << 11) | (bits10_1 << 1)
+
+        if imm & (1 << 20):
+            imm -= 1 << 21
+
+        self.expr = m2_expr.ExprInt(imm, self.intsize)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+
+        imm = int(self.expr)
+
+        if imm & 1:
+            return False
+
+        if imm < -(1 << 20) or imm >= (1 << 20):
+            return False
+
+        imm &= (1 << 21) - 1
+
+        bit20     = (imm >> 20) & 0x1
+        bits19_12 = (imm >> 12) & 0xFF
+        bit11     = (imm >> 11) & 0x1
+        bits10_1  = (imm >> 1)  & 0x3FF
+
+        self.parent.j_imm_20.value   = bit20
+        self.parent.j_imm_10_1.value = bits10_1
+        self.parent.j_imm_11.value   = bit11
+        self.value                   = bits19_12
         return True
 
 class riscv_gpreg(riscv_gpreg_noarg, riscv_arg):
@@ -368,45 +466,84 @@ def riscvop(name, fields, args=None, alias=False):
         dct['args'] = args
     type(name, (mn_riscv,), dct)
 
+# general regs
 rd  = bs(l=5, cls=(riscv_gpreg,), fname="rd")
 rs1 = bs(l=5, cls=(riscv_gpreg,), fname="rs1")
 rs2 = bs(l=5, cls=(riscv_gpreg,), fname="rs2")
-imm11_0 = bs(l=12, cls=(riscv_imm11_0,), fname="imm11_0")
-imm20 = bs(l=20, cls=(riscv_gpreg,), fname="imm20")
-imm12_b  = bs(l=1, fname="imm12_b")
-imm10_5  = bs(l=6, fname="imm10_5")
-imm4_1   = bs(l=4, fname="imm4_1")
-off_b    = bs(l=1, cls=(riscv_b_offs,), fname="off_b")
 
-# nop
-riscvop("nop", [bs("00000000000000000000000000010011")])
+# I-type imm[11:0]
+imm_I = bs(l=12, cls=(riscv_imm_I,), fname="imm_I")
 
-# ADD
-riscvop("add", [bs("0000000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
-riscvop("addi", [imm11_0, rs1, bs("000"), rd, bs("0010011")], [rd, rs1, imm11_0])
+# S-type imm[11:5] | imm[4:0]
+imm_S_hi = bs(l=7, fname="imm_S_hi")
+imm_S    = bs(l=5, cls=(riscv_imm_S,), fname="imm_S")
 
-riscvop("sub", [bs("0100000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+# B-type imm[12|10:5|4:1|11] merge to b_imm
+b_imm_12   = bs(l=1, fname="b_imm_12")
+b_imm_10_5 = bs(l=6, fname="b_imm_10_5")
+b_imm_4_1  = bs(l=4, fname="b_imm_4_1")
+b_imm      = bs(l=1, cls=(riscv_imm_B,), fname="b_imm")
 
-riscvop("and", [bs("0000000"), rs2, rs1, bs("111"), rd, bs("0110011")], [rd, rs1, rs2])
-riscvop("andi", [imm11_0, rs1, bs("111"), rd, bs("0010011")], [rd, rs1, imm11_0])
 
-riscvop("or", [bs("0000000"), rs2, rs1, bs("110"), rd, bs("0110011")], [rd, rs1, rs2])
+# U-type imm[31:12] << 12
+u_imm = bs(l=20, cls=(riscv_imm_U,), fname="u_imm")
 
-riscvop("xor", [bs("0000000"), rs2, rs1, bs("100"), rd, bs("0110011")], [rd, rs1, rs2])
+# J-type JAL offset
+j_imm_20    = bs(l=1, fname="j_imm_20")
+j_imm_10_1  = bs(l=10, fname="j_imm_10_1")
+j_imm_11    = bs(l=1, fname="j_imm_11")
+j_imm       = bs(l=8, cls=(riscv_imm_J,), fname="j_imm")
 
-riscvop("sll", [bs("0000000"), rs2, rs1, bs("001"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("srl", [bs("0000000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+# R-type integer ALU
+riscvop("add",  [bs("0000000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sub",  [bs("0100000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("and",  [bs("0000000"), rs2, rs1, bs("111"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("or",   [bs("0000000"), rs2, rs1, bs("110"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("xor",  [bs("0000000"), rs2, rs1, bs("100"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sll",  [bs("0000000"), rs2, rs1, bs("001"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("srl",  [bs("0000000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sra",  [bs("0100000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("slt",  [bs("0000000"), rs2, rs1, bs("010"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sltu", [bs("0000000"), rs2, rs1, bs("011"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("sra", [bs("0100000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+# I-type ALU imm
+# NOP: addi x0, x0, x0
+riscvop("addi",  [imm_I, rs1, bs("000"), rd, bs("0010011")], [rd, rs1, imm_I])
+riscvop("slti",  [imm_I, rs1, bs("010"), rd, bs("0010011")], [rd, rs1, imm_I])
+riscvop("sltiu", [imm_I, rs1, bs("011"), rd, bs("0010011")], [rd, rs1, imm_I])
+riscvop("xori",  [imm_I, rs1, bs("100"), rd, bs("0010011")], [rd, rs1, imm_I])
+riscvop("ori",   [imm_I, rs1, bs("110"), rd, bs("0010011")], [rd, rs1, imm_I])
+riscvop("andi",  [imm_I, rs1, bs("111"), rd, bs("0010011")], [rd, rs1, imm_I])
 
-riscvop("slt", [bs("0000000"), rs2, rs1, bs("010"), rd, bs("0110011")], [rd, rs1, rs2])
+# I-type LOAD
+riscvop("lb",  [imm_I, rs1, bs("000"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("lh",  [imm_I, rs1, bs("001"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("lw",  [imm_I, rs1, bs("010"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("ld",  [imm_I, rs1, bs("011"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("lbu",[imm_I, rs1, bs("100"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("lhu",[imm_I, rs1, bs("101"), rd, bs("0000011")], [rd, rs1, imm_I])
+riscvop("lwu",[imm_I, rs1, bs("110"), rd, bs("0000011")], [rd, rs1, imm_I])
+# JALR (it approach to I-Type)
+riscvop("jalr", [imm_I, rs1, bs("000"), rd, bs("1100111")], [rd, rs1, imm_I])
 
-riscvop("sltu", [bs("0000000"), rs2, rs1, bs("011"), rd, bs("0110011")], [rd, rs1, rs2]) 
+# S-type STORE
+riscvop("sb", [imm_S_hi, rs2, rs1, bs("000"), imm_S, bs("0100011")], [rs2, rs1, imm_S])
+riscvop("sh", [imm_S_hi, rs2, rs1, bs("001"), imm_S, bs("0100011")], [rs2, rs1, imm_S])
+riscvop("sw", [imm_S_hi, rs2, rs1, bs("010"), imm_S, bs("0100011")], [rs2, rs1, imm_S])
+riscvop("sd", [imm_S_hi, rs2, rs1, bs("011"), imm_S, bs("0100011")], [rs2, rs1, imm_S])
 
-# BRCOND
-riscvop("beq", [imm12_b, imm10_5, rs2, rs1, bs("000"), imm4_1, off_b, bs("1100011")], [rs1, rs2, off_b])
+# B-type BRCOND
+riscvop("beq", [b_imm_12, b_imm_10_5, rs2, rs1, bs("000"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
+riscvop("bne", [b_imm_12, b_imm_10_5, rs2, rs1, bs("001"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
+riscvop("blt", [b_imm_12, b_imm_10_5, rs2, rs1, bs("100"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
+riscvop("bge", [b_imm_12, b_imm_10_5, rs2, rs1, bs("101"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
+riscvop("bltu", [b_imm_12, b_imm_10_5, rs2, rs1, bs("110"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
+riscvop("bgeu", [b_imm_12, b_imm_10_5, rs2, rs1, bs("111"), b_imm_4_1, b_imm, bs("1100011")], [rs1, rs2, b_imm])
 
-# JAL
-riscvop("jal", [imm20, rd, bs("1101111")], [rd, imm20])
-riscvop("jalr", [imm11_0, rs1, bs("000"), rd, bs("1100111")], [rd, rs1, imm11_0])
+# U-type (LUI / AUIPC)
+riscvop("lui",   [u_imm, rd, bs("0110111")], [rd, u_imm])
+riscvop("auipc", [u_imm, rd, bs("0010111")], [rd, u_imm])
+
+# J-type JAL
+riscvop("jal", [j_imm_20, j_imm_10_1, j_imm_11, j_imm, rd, bs("1101111")], [rd, j_imm])

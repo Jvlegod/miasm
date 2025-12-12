@@ -7,12 +7,32 @@ from miasm.core.cpu import gen_reg, gen_regs, reg_info
 exception_flags = ExprId('exception_flags', 32)
 interrupt_num = ExprId('interrupt_num', 32)
 
+# riscv64/32 regs are similar, the only difference being their width.
 xregs_str = ["X%d" % i for i in range(32)]
 xregs_expr, xregs_init, xregs_info = gen_regs(
     xregs_str, globals(), 64)
 
 PC, pc_info = gen_reg("PC", 64)
 
+csr_str = [
+    # User-level
+    "USTATUS", "UIE", "UTVEC",
+    "USCRATCH", "UEPC", "UCAUSE", "UTVAL", "UIP",
+
+    # Supervisor-level
+    "SSTATUS", "SIE", "STVEC",
+    "SSCRATCH", "SEPC", "SCAUSE", "STVAL", "SIP",
+    "SATP",
+
+    # Machine-level
+    "MSTATUS", "MISA", "MIE", "MTVEC",
+    "MSCRATCH", "MEPC", "MCAUSE", "MTVAL", "MIP",
+
+    # hart info
+    "MVENDORID", "MARCHID", "MIMPID", "MHARTID",
+]
+
+csr_expr, csr_init, csr_info = gen_regs(csr_str, globals(), 64)
 
 # TODO: add more special regs if needed
 '''
@@ -27,14 +47,18 @@ all_regs_ids = [
     X16, X17, X18, X19, X20, X21, X22, X23,
     X24, X25, X26, X27, X28, X29, X30, X31,
     PC
-]
+] + csr_expr
 
 all_regs_ids_no_alias = all_regs_ids
-
 all_regs_ids_byname = dict([(x.name, x) for x in all_regs_ids])
 
 all_regs_ids_init = [ExprId("%s_init" % x.name, x.size) for x in all_regs_ids]
-
 regs_init = {}
 for i, r in enumerate(all_regs_ids):
     regs_init[r] = all_regs_ids_init[i]
+
+attrib_to_regs = {
+    64: all_regs_ids_no_alias,
+}
+
+regs_flt_expr = []
