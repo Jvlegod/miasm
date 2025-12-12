@@ -52,11 +52,11 @@ class Machine(object):
             from miasm.arch.arm.lifter_model_call import LifterModelCallArmb as lifter_model_call
             from miasm.arch.arm.sem import Lifter_Armb as lifter
         elif machine_name == "riscv":
-            from miasm.arch.riscv.disasm import dis_riscv as dis_engine
+            from miasm.arch.riscv.disasm import dis_riscv64 as dis_engine
             from miasm.arch.riscv import arch
             try:
                 from miasm.arch.riscv import jit
-                jitter = jit.jitter_riscv
+                jitter = jit.jitter_riscv64
             except ImportError:
                 pass
             mn = arch.mn_riscv

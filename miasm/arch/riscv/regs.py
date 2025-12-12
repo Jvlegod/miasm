@@ -29,6 +29,8 @@ all_regs_ids = [
     PC
 ]
 
+all_regs_ids_no_alias = all_regs_ids
+
 all_regs_ids_byname = dict([(x.name, x) for x in all_regs_ids])
 
 all_regs_ids_byname.update(dict((x.name, x) for x in all_regs_ids))

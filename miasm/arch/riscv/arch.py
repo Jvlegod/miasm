@@ -28,13 +28,21 @@ gpregs_64 = (xregs_info.parser)
 
 gpregs_info = {64: xregs_info, }
 
+BRCOND = ["BEQ", "BNE", "BLT", "BGE", "BLTU", "BGEU"]
+
+CALL = ["JAL", "JALR"]
+
+# TODO: support 32-bit mode
+XLEN64 = 64
+
+
 class riscv_gpreg_noarg(reg_noarg):
     parser = gpregs_64
     gpregs_info = gpregs_info
 
     def decode(self, v):
         # TODO: support 32-bit mode
-        size = 64
+        size = XLEN64
         self.expr = self.gpregs_info[size].expr[v & 0x1F]
         return True
 
@@ -50,7 +58,7 @@ class riscv_arg(m_arg):
     def asm_ast_to_expr(self, value, loc_db, size_hint=None, fixed_size=None):
         if size_hint is None:
             # TODO: support 32-bit mode
-            size_hint = 64
+            size_hint = XLEN64
         if fixed_size is None:
             fixed_size = set()
 
@@ -87,6 +95,87 @@ class riscv_arg(m_arg):
             return m2_expr.ExprOp(value.op, *args)
 
         return None
+    
+class riscv_b_offs(imm_noarg, riscv_arg):
+    parser = base_expr
+
+    def decode(self, v):
+        imm12  = self.parent.imm12_b.value     # inst[31]
+        imm10_5 = self.parent.imm10_5.value    # inst[30:25]
+        imm4_1  = self.parent.imm4_1.value     # inst[11:8]
+        imm11   = v & 1                        # inst[7]
+
+        offw_u = (imm12 << 11) | (imm10_5 << 5) | (imm4_1 << 1) | imm11
+
+        if offw_u & (1 << 11):
+            offw = offw_u - (1 << 12) # Neg
+        else:
+            offw = offw_u # Pos
+
+        off_bytes = offw << 1
+
+        self.expr = m2_expr.ExprInt(off_bytes, XLEN64)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+
+        off_bytes = int(self.expr)
+
+        if off_bytes & 1:
+            return False
+
+        offw = off_bytes >> 1  # word offset
+
+        if offw < -(1 << 11) or offw >= (1 << 11):
+            return False
+
+        offw_u = offw & 0xFFF
+
+        imm12   = (offw_u >> 11) & 0x1
+        imm10_5 = (offw_u >> 5)  & 0x3F
+        imm4_1  = (offw_u >> 1)  & 0xF
+        imm11   = offw_u         & 0x1
+
+        self.parent.imm12_b.value = imm12
+        self.parent.imm10_5.value = imm10_5
+        self.parent.imm4_1.value  = imm4_1
+
+        self.value = imm11
+        return True
+
+class riscv_imm(imm_noarg, riscv_arg):
+    parser = base_expr
+
+    intsize = XLEN64
+    intmask = (1 << intsize) - 1
+    int2expr = lambda self, v: m2_expr.ExprInt(v, XLEN64)
+
+class riscv_imm11_0(imm_noarg, riscv_arg):
+    parser = base_expr
+    intsize = XLEN64
+
+    def decode(self, v):
+        v &= self.lmask
+
+        if v & (1 << (self.l - 1)):
+            v -= 1 << self.l
+
+        self.expr = m2_expr.ExprInt(v, self.intsize)
+        return True
+
+    def encode(self):
+        if not isinstance(self.expr, m2_expr.ExprInt):
+            return False
+
+        v = int(self.expr)
+
+        if v < -(1 << (self.l - 1)) or v >= (1 << (self.l - 1)):
+            return False
+
+        self.value = v & self.lmask
+        return True
 
 class riscv_gpreg(riscv_gpreg_noarg, riscv_arg):
     pass
@@ -104,113 +193,125 @@ class instruction_riscv(instruction):
 
     @staticmethod
     def arg2str(expr, index=None, loc_db=None):
-        wb = False
         if expr.is_id() or expr.is_int():
             return str(expr)
-        elif expr.is_loc():
+
+        if expr.is_loc():
             if loc_db is not None:
                 return loc_db.pretty_str(expr.loc_key)
             else:
                 return str(expr)
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op in shift_expr:
-            op_str = shift_str[shift_expr.index(expr.op)]
-            return "%s %s %s" % (expr.args[0], op_str, expr.args[1])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "slice_at":
-            return "%s LSL %s" % (expr.args[0], expr.args[1])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op in extend_lst:
-            op_str = expr.op
-            return "%s %s %s" % (expr.args[0], op_str, expr.args[1])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "postinc":
-            if int(expr.args[1]) != 0:
-                return "[%s], %s" % (expr.args[0], expr.args[1])
-            else:
-                return "[%s]" % (expr.args[0])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "preinc_wb":
-            if int(expr.args[1]) != 0:
-                return "[%s, %s]!" % (expr.args[0], expr.args[1])
-            else:
-                return "[%s]" % (expr.args[0])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "preinc":
-            if len(expr.args) == 1:
-                return "[%s]" % (expr.args[0])
-            elif not isinstance(expr.args[1], m2_expr.ExprInt) or int(expr.args[1]) != 0:
-                return "[%s, %s]" % (expr.args[0], expr.args[1])
-            else:
-                return "[%s]" % (expr.args[0])
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == 'segm':
-            arg = expr.args[1]
-            if isinstance(arg, m2_expr.ExprId):
-                arg = str(arg)
-            elif arg.op == 'LSL' and int(arg.args[1]) == 0:
-                arg = str(arg.args[0])
-            else:
-                arg = "%s %s %s" % (arg.args[0], arg.op, arg.args[1])
-            return '[%s, %s]' % (expr.args[0], arg)
 
-        else:
-            raise NotImplementedError("bad op")
+        if isinstance(expr, m2_expr.ExprOp) and expr.op == "+":
+            base, off = expr.args
+            if off.is_int():
+                return "%s(%s)" % (off, base)
+            return "%s + %s" % (base, off)
+
+        if isinstance(expr, m2_expr.ExprOp):
+            return "%s(%s)" % (expr.op, ", ".join(str(a) for a in expr.args))
+
+        raise NotImplementedError("bad op %r" % (expr,))
 
     @staticmethod
     def arg2html(expr, index=None, loc_db=None):
-        wb = False
         if expr.is_id() or expr.is_int() or expr.is_loc():
             return color_expr_html(expr, loc_db)
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op in shift_expr:
-            op_str = shift_str[shift_expr.index(expr.op)]
-            return "%s %s %s" % (
-                color_expr_html(expr.args[0], loc_db),
-                utils.set_html_text_color(op_str, utils.COLOR_OP),
-                color_expr_html(expr.args[1], loc_db)
-            )
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "slice_at":
-            return "%s LSL %s" % (
-                color_expr_html(expr.args[0], loc_db),
-                color_expr_html(expr.args[1], loc_db)
-            )
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op in extend_lst:
-            op_str = expr.op
-            return "%s %s %s" % (
-                color_expr_html(expr.args[0], loc_db),
-                op_str,
-                color_expr_html(expr.args[1], loc_db)
-            )
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "postinc":
-            if int(expr.args[1]) != 0:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + BRACKET_C + ", " + color_expr_html(expr.args[1], loc_db)
-            else:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + BRACKET_C
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "preinc_wb":
-            if int(expr.args[1]) != 0:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + ", " + color_expr_html(expr.args[1], loc_db) + BRACKET_C + '!'
-            else:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + BRACKET_C
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == "preinc":
-            if len(expr.args) == 1:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + BRACKET_C
-            elif not isinstance(expr.args[1], m2_expr.ExprInt) or int(expr.args[1]) != 0:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + ", " + color_expr_html(expr.args[1], loc_db) + BRACKET_C
-            else:
-                return BRACKET_O + color_expr_html(expr.args[0], loc_db) + BRACKET_C
-        elif isinstance(expr, m2_expr.ExprOp) and expr.op == 'segm':
-            arg = expr.args[1]
-            if isinstance(arg, m2_expr.ExprId):
-                arg = str(arg)
-            elif arg.op == 'LSL' and int(arg.args[1]) == 0:
-                arg = str(arg.args[0])
-            else:
-                arg = "%s %s %s" % (
-                    color_expr_html(arg.args[0], loc_db),
-                    utils.set_html_text_color(arg.op, utils.COLOR_OP),
-                    color_expr_html(arg.args[1], loc_db)
+
+        if isinstance(expr, m2_expr.ExprOp) and expr.op == "+":
+            base, off = expr.args
+            if off.is_int():
+                return "%s(%s)" % (
+                    color_expr_html(off, loc_db),
+                    color_expr_html(base, loc_db),
                 )
-            return BRACKET_O + color_expr_html(expr.args[0], loc_db) + ', ' +  arg + BRACKET_C
+            return "%s + %s" % (
+                color_expr_html(base, loc_db),
+                color_expr_html(off, loc_db),
+            )
+
+        if isinstance(expr, m2_expr.ExprOp):
+            args_html = ", ".join(color_expr_html(a, loc_db) for a in expr.args)
+            return "%s(%s)" % (
+                utils.set_html_text_color(expr.op, utils.COLOR_OP),
+                args_html,
+            )
+
+        raise NotImplementedError("bad op %r" % (expr,))
+
+    def splitflow(self):
+        if self.name in BRCOND:
+            return True
+
+        if self.name == "JAL":
+            return True
+
+        if self.name == "JALR":
+            rd = self.args[0]
+
+            if rd != X0:
+                return True
+
+            return False
+
+        return False
+
+
+    def dstflow(self):
+        if self.name in BRCOND:
+            return True
+
+        if self.name == "JAL":
+            return True
+
+        if self.name == "JALR":
+            rd = self.args[0]
+
+            if rd != X0:
+                return True
+
+            return False
+
+        return False
+    
+    def dstflow2label(self, loc_db):
+        index = self.mnemo_flow_to_dst_index(self.name)
+        expr = self.args[index]
+
+        if not expr.is_int():
+            return
+        
+        addr = (int(expr) + self.offset) & int(expr.mask)
+        loc_key = loc_db.get_or_create_offset_location(addr)
+        self.args[index] = m2_expr.ExprLoc(loc_key, expr.size)
+
+    def mnemo_flow_to_dst_index(self, name):
+        if self.name in BRCOND:
+            return 2
+
+        elif self.name in ["JAL"]:
+            return len(self.args) - 1
+
+        elif self.name in ["JALR"]:
+            return 1
 
         else:
-            raise NotImplementedError("bad op")
-        
-    def is_subcall(self):
-        return self.name in ["JAL", "JALR"]
+            return 0
 
+    def getdstflow(self, loc_db):
+        index = self.mnemo_flow_to_dst_index(self.name)
+        return [self.args[index]]
+
+
+    def breakflow(self):
+        return self.name in (
+            BRCOND
+            + CALL
+            + ["RET", "ECALL", "EBREAK", "MRET", "SRET", "URET"]
+        )
+
+    def is_subcall(self):
+        return self.name in CALL
 
 class mn_riscv(cls_mn):
     name = "riscv"
@@ -267,33 +368,45 @@ def riscvop(name, fields, args=None, alias=False):
         dct['args'] = args
     type(name, (mn_riscv,), dct)
 
-class riscv_gpreg(riscv_gpreg_noarg, riscv_arg):
-    pass
-
 rd  = bs(l=5, cls=(riscv_gpreg,), fname="rd")
 rs1 = bs(l=5, cls=(riscv_gpreg,), fname="rs1")
 rs2 = bs(l=5, cls=(riscv_gpreg,), fname="rs2")
+imm11_0 = bs(l=12, cls=(riscv_imm11_0,), fname="imm11_0")
+imm20 = bs(l=20, cls=(riscv_gpreg,), fname="imm20")
+imm12_b  = bs(l=1, fname="imm12_b")
+imm10_5  = bs(l=6, fname="imm10_5")
+imm4_1   = bs(l=4, fname="imm4_1")
+off_b    = bs(l=1, cls=(riscv_b_offs,), fname="off_b")
 
 # nop
 riscvop("nop", [bs("00000000000000000000000000010011")])
 
 # ADD
-riscvop("add",[bs("0000000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("add", [bs("0000000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("addi", [imm11_0, rs1, bs("000"), rd, bs("0010011")], [rd, rs1, imm11_0])
 
-riscvop("sub",[bs("0100000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sub", [bs("0100000"), rs2, rs1, bs("000"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("and",[bs("0000000"), rs2, rs1, bs("111"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("and", [bs("0000000"), rs2, rs1, bs("111"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("andi", [imm11_0, rs1, bs("111"), rd, bs("0010011")], [rd, rs1, imm11_0])
 
-riscvop("or",[bs("0000000"), rs2, rs1, bs("110"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("or", [bs("0000000"), rs2, rs1, bs("110"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("xor",[bs("0000000"), rs2, rs1, bs("100"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("xor", [bs("0000000"), rs2, rs1, bs("100"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("sll",[bs("0000000"), rs2, rs1, bs("001"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sll", [bs("0000000"), rs2, rs1, bs("001"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("srl",[bs("0000000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("srl", [bs("0000000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("sra",[bs("0100000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("sra", [bs("0100000"), rs2, rs1, bs("101"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("slt",[bs("0000000"), rs2, rs1, bs("010"), rd, bs("0110011")], [rd, rs1, rs2])
+riscvop("slt", [bs("0000000"), rs2, rs1, bs("010"), rd, bs("0110011")], [rd, rs1, rs2])
 
-riscvop("sltu",[bs("0000000"), rs2, rs1, bs("011"), rd, bs("0110011")], [rd, rs1, rs2]) 
+riscvop("sltu", [bs("0000000"), rs2, rs1, bs("011"), rd, bs("0110011")], [rd, rs1, rs2]) 
+
+# BRCOND
+riscvop("beq", [imm12_b, imm10_5, rs2, rs1, bs("000"), imm4_1, off_b, bs("1100011")], [rs1, rs2, off_b])
+
+# JAL
+riscvop("jal", [imm20, rd, bs("1101111")], [rd, imm20])
+riscvop("jalr", [imm11_0, rs1, bs("000"), rd, bs("1100111")], [rd, rs1, imm11_0])

@@ -185,6 +185,17 @@ def build_all():
             ]
         ),
         Extension(
+            "miasm.jitter.arch.JitCore_riscv",
+            [
+                "miasm/jitter/JitCore.c",
+                "miasm/jitter/vm_mngr.c",
+                "miasm/jitter/vm_mngr_py.c",
+                "miasm/jitter/op_semantics.c",
+                "miasm/jitter/bn.c",
+                "miasm/jitter/arch/JitCore_riscv.c"
+            ]
+        ),
+        Extension(
             "miasm.jitter.arch.JitCore_aarch64",
             [
                 "miasm/jitter/JitCore.c",

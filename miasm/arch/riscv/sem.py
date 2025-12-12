@@ -9,7 +9,7 @@ from miasm.arch.riscv.regs import *
 from miasm.core.sembuilder import SemBuilder
 from miasm.jitter.csts import EXCEPT_DIV_BY_ZERO, EXCEPT_INT_XX
 
-# System register for ARM64-A 8.6
+# System register for riscv64
 system_regs = {
     # op0 op1 crn crm op2
 }
@@ -30,57 +30,41 @@ sbuild = SemBuilder(ctx)
 # instruction definition ##############
 
 @sbuild.parse
-def add(arg1, arg2, arg3):
-    arg1 = arg2 + arg3
+def add(rd, rs1, rs2):
+    rd = rs1 + rs2
 
 
 @sbuild.parse
-def sub(arg1, arg2, arg3):
-    arg1 = arg2 - arg3
+def addi(rd, rs1, imm):
+    rd = rs1 + imm.signExtend(rs1.size)
 
 
 @sbuild.parse
-def mov(arg1, arg2):
-    arg1 = arg2
+def andi(rd, rs1, imm):
+    rd = rs1 & imm.zeroExtend(rs1.size)
 
-def get_mem_access(mem):
-    updt = None
-    if isinstance(mem, ExprOp):
-        if mem.op == 'preinc':
-            if len(mem.args) == 1:
-                addr = mem.args[0]
-            else:
-                addr = mem.args[0] + mem.args[1]
-        elif mem.op == 'segm':
-            base = mem.args[0]
-            op, (reg, shift) = mem.args[1].op, mem.args[1].args
-            if op == 'SXTW':
-                off = reg.signExtend(base.size) << shift.zeroExtend(base.size)
-                addr = base + off
-            elif op == 'UXTW':
-                off = reg.zeroExtend(base.size) << shift.zeroExtend(base.size)
-                addr = base + off
-            elif op == 'LSL':
-                if isinstance(shift, ExprInt) and int(shift) == 0:
-                    addr = base + reg.zeroExtend(base.size)
-                else:
-                    addr = base + \
-                        (reg.zeroExtend(base.size)
-                         << shift.zeroExtend(base.size))
-            else:
-                raise NotImplementedError('bad op')
-        elif mem.op == "postinc":
-            addr, off = mem.args
-            updt = ExprAssign(addr, addr + off)
-        elif mem.op == "preinc_wb":
-            base, off = mem.args
-            addr = base + off
-            updt = ExprAssign(base, base + off)
-        else:
-            raise NotImplementedError('bad op')
-    else:
-        raise NotImplementedError('bad op')
-    return addr, updt
+
+@sbuild.parse
+def beq(rs1, rs2, target):
+    cond = ExprOp("==", rs1, rs2)
+
+    fallthrough = ExprLoc(ir.get_next_loc_key(instr), PC.size)
+
+    dst = ExprCond(cond, target, fallthrough)
+
+    PC = dst
+    ir.IRDst = dst
+
+
+@sbuild.parse
+def jalr(rd, rs1, imm):
+    ret_addr = ExprInt(instr.offset + instr.l, PC.size)
+    rd = ret_addr
+
+    dst = rs1 + imm.signExtend(rs1.size)
+    PC = dst
+    ir.IRDst = dst
+
 
 @sbuild.parse
 def ret(arg1):
@@ -89,16 +73,15 @@ def ret(arg1):
 
 mnemo_func = sbuild.functions
 mnemo_func.update({
-    'add': add,
+    # TODO: add more mnemonics here
 })
 
 
 def get_mnemo_expr(ir, instr, *args):
     if not instr.name.lower() in mnemo_func:
         raise NotImplementedError('unknown mnemo %s' % instr)
-    instr, extra_ir = mnemo_func[instr.name.lower()](ir, instr, *args)
-    return instr, extra_ir
-
+    instr_ir, extra_ir = mnemo_func[instr.name.lower()](ir, instr, *args)
+    return instr_ir, extra_ir
 
 class riscvinfo(object):
     mode = "riscv"
@@ -172,4 +155,3 @@ class Lifter_Riscv64(Lifter):
             new_irblocks.append(IRBlock(self.loc_db, irblock.loc_key, irs))
 
         return instr_ir, new_irblocks
-

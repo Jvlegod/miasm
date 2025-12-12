@@ -17,10 +17,5 @@ class dis_riscv(disasmEngine):
         super(dis_riscv, self).__init__(mn_riscv, self.attrib, bs, **kwargs)
         self.dis_block_callback = cb_riscv_disasm
 
-
-class dis_riscv_32(dis_riscv):
-    attrib = 32
-
-
-class dis_riscv_64(dis_riscv):
+class dis_riscv64(dis_riscv):
     attrib = 64
